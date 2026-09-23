@@ -15,9 +15,11 @@ PAYMENT_BUCKET_OTHER = "other"
 
 
 def get_connection(db_path=DEFAULT_DB_PATH):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -396,6 +398,31 @@ def _create_schema(cursor):
 
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('manager', 'cashier')),
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS pos_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             opened_at TEXT NOT NULL,
@@ -406,7 +433,11 @@ def _create_schema(cursor):
             balance_difference REAL,
             status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
             opening_notes TEXT,
-            closing_notes TEXT
+            closing_notes TEXT,
+            opened_by_user_id INTEGER,
+            closed_by_user_id INTEGER,
+            FOREIGN KEY (opened_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (closed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
         )
         """
     )
@@ -422,8 +453,10 @@ def _create_schema(cursor):
             tax_amount REAL DEFAULT 0,
             payment_method TEXT NOT NULL,
             session_id INTEGER,
+            user_id INTEGER,
             FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL,
-            FOREIGN KEY (session_id) REFERENCES pos_sessions (id) ON DELETE RESTRICT
+            FOREIGN KEY (session_id) REFERENCES pos_sessions (id) ON DELETE RESTRICT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
         )
         """
     )
@@ -459,8 +492,10 @@ def _create_schema(cursor):
             refund_method TEXT NOT NULL,
             reason TEXT,
             notes TEXT,
+            user_id INTEGER,
             FOREIGN KEY (original_sale_id) REFERENCES sales(id) ON DELETE RESTRICT,
-            FOREIGN KEY (session_id) REFERENCES pos_sessions(id) ON DELETE RESTRICT
+            FOREIGN KEY (session_id) REFERENCES pos_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
         )
         """
     )
@@ -497,7 +532,9 @@ def _create_schema(cursor):
             payment_method TEXT NOT NULL DEFAULT 'كاش',
             reference_number TEXT,
             notes TEXT,
-            FOREIGN KEY (session_id) REFERENCES pos_sessions(id) ON DELETE RESTRICT
+            user_id INTEGER,
+            FOREIGN KEY (session_id) REFERENCES pos_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
         )
         """
     )
@@ -588,6 +625,20 @@ def _database_requires_migration(cursor):
     if not _column_exists(cursor, "sale_items", "pieces_per_unit"):
         return True
     if not _column_exists(cursor, "sale_items", "base_quantity"):
+        return True
+    if not _table_exists(cursor, "users"):
+        return True
+    if not _table_exists(cursor, "auth_sessions"):
+        return True
+    if not _column_exists(cursor, "pos_sessions", "opened_by_user_id"):
+        return True
+    if not _column_exists(cursor, "pos_sessions", "closed_by_user_id"):
+        return True
+    if not _column_exists(cursor, "sales", "user_id"):
+        return True
+    if not _column_exists(cursor, "sale_returns", "user_id"):
+        return True
+    if not _column_exists(cursor, "expenses", "user_id"):
         return True
     return False
 
@@ -732,6 +783,51 @@ def _run_migrations(cursor):
         )
         _record_migration(cursor, 10, "Created sale_return_items table")
 
+    if not _table_exists(cursor, "users"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('manager', 'cashier')),
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        _record_migration(cursor, 11, "Created users table")
+
+    if not _table_exists(cursor, "auth_sessions"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        _record_migration(cursor, 12, "Created auth_sessions table")
+
+    if _table_exists(cursor, "pos_sessions") and not _column_exists(cursor, "pos_sessions", "opened_by_user_id"):
+        cursor.execute("ALTER TABLE pos_sessions ADD COLUMN opened_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        _record_migration(cursor, 13, "Added pos_sessions.opened_by_user_id")
+    if _table_exists(cursor, "pos_sessions") and not _column_exists(cursor, "pos_sessions", "closed_by_user_id"):
+        cursor.execute("ALTER TABLE pos_sessions ADD COLUMN closed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        _record_migration(cursor, 14, "Added pos_sessions.closed_by_user_id")
+    if _table_exists(cursor, "sales") and not _column_exists(cursor, "sales", "user_id"):
+        cursor.execute("ALTER TABLE sales ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        _record_migration(cursor, 15, "Added sales.user_id")
+    if _table_exists(cursor, "sale_returns") and not _column_exists(cursor, "sale_returns", "user_id"):
+        cursor.execute("ALTER TABLE sale_returns ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        _record_migration(cursor, 16, "Added sale_returns.user_id")
+    if _table_exists(cursor, "expenses") and not _column_exists(cursor, "expenses", "user_id"):
+        cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        _record_migration(cursor, 17, "Added expenses.user_id")
+
     _create_indexes(cursor)
 
 
@@ -749,19 +845,20 @@ def init_db(db_path=DEFAULT_DB_PATH, seed_sample_data=True):
             raise RuntimeError("تعذر إنشاء نسخة احتياطية قبل الترقية.") from exc
 
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    _create_schema(cursor)
-    _run_migrations(cursor)
-    _seed_default_product_units(cursor)
-    conn.commit()
+    try:
+        cursor = conn.cursor()
+        _create_schema(cursor)
+        _run_migrations(cursor)
+        _seed_default_product_units(cursor)
+        conn.commit()
 
-    if seed_sample_data and not db_exists_before_init:
-        cursor.execute("SELECT COUNT(*) FROM categories")
-        if cursor.fetchone()[0] == 0:
-            _insert_sample_data(cursor)
-            conn.commit()
-
-    conn.close()
+        if seed_sample_data and not db_exists_before_init:
+            cursor.execute("SELECT COUNT(*) FROM categories")
+            if cursor.fetchone()[0] == 0:
+                _insert_sample_data(cursor)
+                conn.commit()
+    finally:
+        conn.close()
 
 
 def reset_db(db_path=DEFAULT_DB_PATH):
@@ -771,6 +868,7 @@ def reset_db(db_path=DEFAULT_DB_PATH):
     cursor.execute("PRAGMA foreign_keys = OFF")
     cursor.executescript(
         """
+        DROP TABLE IF EXISTS auth_sessions;
         DROP TABLE IF EXISTS sale_return_items;
         DROP TABLE IF EXISTS sale_returns;
         DROP TABLE IF EXISTS expenses;
@@ -779,10 +877,13 @@ def reset_db(db_path=DEFAULT_DB_PATH):
         DROP TABLE IF EXISTS pos_sessions;
         DROP TABLE IF EXISTS purchase_order_items;
         DROP TABLE IF EXISTS purchase_orders;
+        DROP TABLE IF EXISTS product_units;
+        DROP TABLE IF EXISTS units;
         DROP TABLE IF EXISTS products;
         DROP TABLE IF EXISTS customers;
         DROP TABLE IF EXISTS suppliers;
         DROP TABLE IF EXISTS categories;
+        DROP TABLE IF EXISTS users;
         DROP TABLE IF EXISTS schema_migrations;
         """
     )
@@ -794,7 +895,10 @@ def reset_db(db_path=DEFAULT_DB_PATH):
 
 
 def _insert_sample_data(cursor):
-    print("إعداد قاعدة البيانات بالبيانات الافتراضية الأولية...")
+    try:
+        print("إعداد قاعدة البيانات بالبيانات الافتراضية الأولية...")
+    except UnicodeEncodeError:
+        print("Seeding initial sample data...")
     categories = [
         ("ملابس وأزياء", "ملابس وإكسسوارات عصرية"),
         ("إلكترونيات", "أجهزة ذكية، هواتف، وكابلات تقنية"),
@@ -1076,6 +1180,15 @@ def update_customer(cust_id, name, phone, email, points, db_path=DEFAULT_DB_PATH
         conn.close()
 
 
+def get_customer_sales(customer_id, db_path=DEFAULT_DB_PATH):
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM sales WHERE customer_id = ? ORDER BY sale_date DESC", (customer_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
 def delete_customer(cust_id, db_path=DEFAULT_DB_PATH):
     conn = get_connection(db_path)
     cursor = conn.cursor()
@@ -1225,7 +1338,7 @@ def get_pos_sessions(limit=None, db_path=DEFAULT_DB_PATH):
     return [dict(row) for row in rows]
 
 
-def open_pos_session(opening_balance, notes=None, db_path=DEFAULT_DB_PATH):
+def open_pos_session(opening_balance, notes=None, db_path=DEFAULT_DB_PATH, opened_by_user_id=None):
     """Open a new cashier session if no other session is currently open."""
     try:
         opening_balance = _ensure_non_negative_amount(opening_balance)
@@ -1237,7 +1350,10 @@ def open_pos_session(opening_balance, notes=None, db_path=DEFAULT_DB_PATH):
         cursor.execute("SELECT id FROM pos_sessions WHERE status='OPEN' LIMIT 1")
         if cursor.fetchone():
             return False, "يوجد بالفعل جلسة مفتوحة"
-        cursor.execute("INSERT INTO pos_sessions (opened_at, opening_balance, status, opening_notes) VALUES (?, ?, 'OPEN', ?)", (_now_str(), opening_balance, (notes or "").strip() or None))
+        cursor.execute(
+            "INSERT INTO pos_sessions (opened_at, opening_balance, status, opening_notes, opened_by_user_id) VALUES (?, ?, 'OPEN', ?, ?)",
+            (_now_str(), opening_balance, (notes or "").strip() or None, opened_by_user_id),
+        )
         session_id = cursor.lastrowid
         conn.commit()
         return True, session_id
@@ -1319,7 +1435,7 @@ def get_expenses_summary(session_id, db_path=DEFAULT_DB_PATH):
     }
 
 
-def add_expense(session_id, category, description, amount, payment_method="كاش", reference_number=None, notes=None, db_path=DEFAULT_DB_PATH):
+def add_expense(session_id, category, description, amount, payment_method="كاش", reference_number=None, notes=None, db_path=DEFAULT_DB_PATH, user_id=None):
     """Add a new session expense after validating the active session."""
     category = (category or "").strip()
     description = (description or "").strip()
@@ -1345,10 +1461,10 @@ def add_expense(session_id, category, description, amount, payment_method="كا�
             return False, "لا توجد جلسة كاشير مفتوحة"
         cursor.execute(
             """
-            INSERT INTO expenses (session_id, expense_date, category, description, amount, payment_method, reference_number, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO expenses (session_id, expense_date, category, description, amount, payment_method, reference_number, notes, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, _now_str(), category, description, amount, payment_method, reference_number, notes),
+            (session_id, _now_str(), category, description, amount, payment_method, reference_number, notes, user_id),
         )
         expense_id = cursor.lastrowid
         conn.commit()
@@ -1389,7 +1505,7 @@ def delete_expense(expense_id, db_path=DEFAULT_DB_PATH):
         conn.close()
 
 
-def record_sale(customer_id, items, total_amount, discount, tax_amount, payment_method, session_id=None, db_path=DEFAULT_DB_PATH):
+def record_sale(customer_id, items, total_amount, discount, tax_amount, payment_method, session_id=None, db_path=DEFAULT_DB_PATH, user_id=None):
     """
     Record a sale atomically.
 
@@ -1412,10 +1528,10 @@ def record_sale(customer_id, items, total_amount, discount, tax_amount, payment_
 
         cursor.execute(
             """
-            INSERT INTO sales (sale_date, customer_id, total_amount, discount, tax_amount, payment_method, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sales (sale_date, customer_id, total_amount, discount, tax_amount, payment_method, session_id, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (_now_str(), customer_id, total_amount, discount, tax_amount, payment_method, session_id),
+            (_now_str(), customer_id, total_amount, discount, tax_amount, payment_method, session_id, user_id),
         )
         sale_id = cursor.lastrowid
 
@@ -1797,7 +1913,7 @@ def preview_sale_return(original_sale_id, items, refund_method="نفس طريق�
     }
 
 
-def record_sale_return(original_sale_id, session_id, items, refund_method, reason=None, notes=None, db_path=DEFAULT_DB_PATH):
+def record_sale_return(original_sale_id, session_id, items, refund_method, reason=None, notes=None, db_path=DEFAULT_DB_PATH, user_id=None):
     """Create a full or partial return linked to an original sale in one transaction."""
     if not items:
         return False, "اختر منتجًا واحدًا على الأقل للاسترجاع"
@@ -1831,10 +1947,10 @@ def record_sale_return(original_sale_id, session_id, items, refund_method, reaso
 
         cursor.execute(
             """
-            INSERT INTO sale_returns (original_sale_id, session_id, return_date, total_amount, refund_method, reason, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sale_returns (original_sale_id, session_id, return_date, total_amount, refund_method, reason, notes, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (original_sale_id, session_id, _now_str(), total_return_amount, resolved_refund_method, (reason or "").strip() or None, (notes or "").strip() or None),
+            (original_sale_id, session_id, _now_str(), total_return_amount, resolved_refund_method, (reason or "").strip() or None, (notes or "").strip() or None, user_id),
         )
         return_id = cursor.lastrowid
 
@@ -2000,7 +2116,7 @@ def calculate_session_summary(session_id, db_path=DEFAULT_DB_PATH):
     }
 
 
-def close_pos_session(session_id, actual_balance, notes=None, db_path=DEFAULT_DB_PATH):
+def close_pos_session(session_id, actual_balance, notes=None, db_path=DEFAULT_DB_PATH, closed_by_user_id=None):
     """Close an open session after recalculating reconciliation totals."""
     try:
         actual_balance = _ensure_non_negative_amount(actual_balance)
@@ -2023,10 +2139,11 @@ def close_pos_session(session_id, actual_balance, notes=None, db_path=DEFAULT_DB
                 actual_closing_balance=?,
                 balance_difference=?,
                 closing_notes=?,
-                status='CLOSED'
+                status='CLOSED',
+                closed_by_user_id=?
             WHERE id=? AND status='OPEN'
             """,
-            (_now_str(), expected_balance, actual_balance, difference, (notes or "").strip() or None, session_id),
+            (_now_str(), expected_balance, actual_balance, difference, (notes or "").strip() or None, closed_by_user_id, session_id),
         )
         if cursor.rowcount == 0:
             return False, "لا يمكن إغلاق جلسة مغلقة بالفعل"
