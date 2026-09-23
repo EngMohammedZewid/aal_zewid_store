@@ -278,7 +278,7 @@ export function PosPage() {
         <section className="panel">
           <h2>الكتالوج</h2>
           <input className="grow" placeholder="بحث بالاسم أو الباركود" value={query} onChange={(event) => setQuery(event.target.value)} />
-          <div className="table-wrap" style={{ marginTop: 12 }}>
+          <div className="table-wrap catalog-scroll">
             <table>
               <thead><tr><th>SKU</th><th>المنتج</th><th>السعر</th><th>المخزون</th></tr></thead>
               <tbody>
