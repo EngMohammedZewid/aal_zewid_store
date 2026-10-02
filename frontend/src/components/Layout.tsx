@@ -17,7 +17,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="app-shell">
-      <main className="content">{children}</main>
       <aside className="sidebar">
         <div className="logo">
           <strong>🏬 إدارة المتجر</strong>
@@ -36,6 +35,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <button className="danger-link" onClick={() => logout()}>🚪 تسجيل الخروج</button>
         </div>
       </aside>
+      <main className="content">{children}</main>
     </div>
   );
 }

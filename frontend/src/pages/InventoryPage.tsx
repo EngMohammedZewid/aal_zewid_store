@@ -175,7 +175,7 @@ export function InventoryPage() {
         <button className="btn btn-muted" onClick={load}>بحث</button>
       </div>
       <section className="panel">
-        <div className="table-wrap">
+        <div className="table-wrap inventory-scroll">
           <table>
             <thead>
               <tr><th>الرقم</th><th>SKU</th><th>الاسم</th><th>التصنيف</th><th>المورّد</th><th>التكلفة</th><th>البيع</th><th>المخزون</th><th>حد التنبيه</th></tr>

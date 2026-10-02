@@ -60,17 +60,26 @@ a { color: inherit; text-decoration: none; }
 
 .panel h2 { margin: 0 0 12px; font-size: 18px; }
 .table-wrap { overflow: auto; }
+.catalog-scroll,
+.inventory-scroll {
+  overflow-y: auto;
+}
 .catalog-scroll {
   margin-top: 12px;
   max-height: calc(11 * 2.75rem);
-  overflow-y: auto;
+}
+.inventory-scroll {
+  max-height: calc(15 * 2.75rem);
 }
 .catalog-scroll th,
-.catalog-scroll td {
+.catalog-scroll td,
+.inventory-scroll th,
+.inventory-scroll td {
   height: 2.75rem;
   box-sizing: border-box;
 }
-.catalog-scroll thead th {
+.catalog-scroll thead th,
+.inventory-scroll thead th {
   position: sticky;
   top: 0;
   z-index: 1;
