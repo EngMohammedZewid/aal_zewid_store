@@ -38,6 +38,8 @@ export function InventoryPage() {
   const [catName, setCatName] = useState("");
   const [catDesc, setCatDesc] = useState("");
   const [error, setError] = useState("");
+  const [savedMessage, setSavedMessage] = useState("");
+  const [productFormKey, setProductFormKey] = useState(0);
 
   async function load() {
     const params = new URLSearchParams();
@@ -61,6 +63,7 @@ export function InventoryPage() {
 
   async function openEditor(product: Product | "new") {
     setError("");
+    setSavedMessage("");
     if (product === "new") {
       setEditing("new");
       setUnits([emptyUnit()]);
@@ -112,7 +115,14 @@ export function InventoryPage() {
           });
         }
       }
-      setEditing(null);
+      if (editing === "new") {
+        setUnits([{ unit_name: "Piece", pieces: "", cost: "", selling: "", is_default: true }]);
+        setProductFormKey((key) => key + 1);
+        setSavedMessage("تم حفظ المنتج بنجاح. يمكنك إضافة المنتج التالي.");
+        setError("");
+      } else {
+        setEditing(null);
+      }
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "تعذر حفظ المنتج");
@@ -199,7 +209,8 @@ export function InventoryPage() {
 
       {editing && (
         <Modal title={editing === "new" ? "إضافة منتج" : "تعديل منتج"} onClose={() => setEditing(null)}>
-          <form className="form-grid" onSubmit={saveProduct}>
+          {savedMessage && editing === "new" && <div className="note">{savedMessage}</div>}
+          <form key={productFormKey} className="form-grid" onSubmit={saveProduct}>
             <label>SKU<input name="sku" defaultValue={draft?.sku || ""} required /></label>
             <label>اسم المنتج<input name="name" defaultValue={draft?.name || ""} required /></label>
             <label>التصنيف
@@ -214,10 +225,10 @@ export function InventoryPage() {
                 {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
               </select>
             </label>
-            <label>سعر التكلفة<input name="cost_price" type="number" step="0.01" defaultValue={draft?.cost_price ?? 0} required /></label>
-            <label>سعر البيع<input name="selling_price" type="number" step="0.01" defaultValue={draft?.selling_price ?? 0} required /></label>
-            <label>الكمية<input name="stock_quantity" type="number" defaultValue={draft?.stock_quantity ?? 0} required /></label>
-            <label>حد التنبيه<input name="reorder_level" type="number" defaultValue={draft?.reorder_level ?? 5} required /></label>
+            <label>سعر التكلفة<input name="cost_price" type="number" step="0.01" defaultValue={draft ? draft.cost_price : ""} required /></label>
+            <label>سعر البيع<input name="selling_price" type="number" step="0.01" defaultValue={draft ? draft.selling_price : ""} required /></label>
+            <label>الكمية<input name="stock_quantity" type="number" defaultValue={draft ? draft.stock_quantity : ""} required /></label>
+            <label>حد التنبيه<input name="reorder_level" type="number" defaultValue={draft ? draft.reorder_level : ""} required /></label>
             <h3>وحدات البيع</h3>
             {units.map((unit, index) => (
               <div className="toolbar" key={index}>
