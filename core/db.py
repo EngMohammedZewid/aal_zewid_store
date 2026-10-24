@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from core.phase1_foundation import apply_phase1, is_production_database
+
 DEFAULT_DB_PATH = "store.db"
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 TAX_RATE = Decimal("0.08")
@@ -651,7 +653,7 @@ def _backup_database_if_needed(db_path):
     return backup_name
 
 
-def _run_migrations(cursor):
+def _run_migrations(cursor, db_path=DEFAULT_DB_PATH):
     if not _table_exists(cursor, "units"):
         cursor.execute(
             """
@@ -828,6 +830,9 @@ def _run_migrations(cursor):
         cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         _record_migration(cursor, 17, "Added expenses.user_id")
 
+    if not is_production_database(db_path):
+        apply_phase1(cursor)
+
     _create_indexes(cursor)
 
 
@@ -848,7 +853,7 @@ def init_db(db_path=DEFAULT_DB_PATH, seed_sample_data=True):
     try:
         cursor = conn.cursor()
         _create_schema(cursor)
-        _run_migrations(cursor)
+        _run_migrations(cursor, db_path)
         _seed_default_product_units(cursor)
         conn.commit()
 
@@ -868,6 +873,10 @@ def reset_db(db_path=DEFAULT_DB_PATH):
     cursor.execute("PRAGMA foreign_keys = OFF")
     cursor.executescript(
         """
+        DROP TABLE IF EXISTS purchase_returns;
+        DROP TABLE IF EXISTS inventory_adjustments;
+        DROP TABLE IF EXISTS opening_balances;
+        DROP TABLE IF EXISTS posting_keys;
         DROP TABLE IF EXISTS auth_sessions;
         DROP TABLE IF EXISTS sale_return_items;
         DROP TABLE IF EXISTS sale_returns;
@@ -888,6 +897,8 @@ def reset_db(db_path=DEFAULT_DB_PATH):
         """
     )
     _create_schema(cursor)
+    if not is_production_database(db_path):
+        apply_phase1(cursor)
     _create_indexes(cursor)
     cursor.execute("PRAGMA foreign_keys = ON")
     conn.commit()
