@@ -9,7 +9,7 @@ class LoginIn(BaseModel):
 
 
 class ProductIn(BaseModel):
-    sku: str
+    sku: str = ""
     name: str
     category_id: Optional[int] = None
     cost_price: float
@@ -28,8 +28,13 @@ class UnitIn(BaseModel):
 
 
 class CategoryIn(BaseModel):
+    code: str
     name: str
-    description: str = ""
+    description: str
+
+
+class CategoryCodeIn(BaseModel):
+    code: str
 
 
 class CustomerIn(BaseModel):

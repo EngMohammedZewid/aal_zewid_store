@@ -13,7 +13,7 @@ import {
   unitLabel,
 } from "../constants";
 
-type Product = { id: number; sku: string; name: string; selling_price: number; category_name: string | null; stock_quantity: number };
+type Product = { id: number; sku: string; name: string; selling_price: number; category_code: string | null; category_name: string | null; stock_quantity: number };
 type Unit = { id: number; unit_name: string; selling_price: number; pieces_per_unit: number; is_default: number };
 type Customer = { id: number; name: string; phone: string | null };
 type CartLine = {
@@ -108,6 +108,7 @@ export function PosPage() {
     return products.filter((product) =>
       product.name.toLowerCase().includes(needle) ||
       product.sku.toLowerCase().includes(needle) ||
+      (product.category_code || "").toLowerCase().includes(needle) ||
       (product.category_name || "").toLowerCase().includes(needle)
     );
   }, [products, query]);

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { Modal } from "../components/Modal";
 import { money, UNIT_OPTIONS, unitLabel } from "../constants";
@@ -8,6 +8,7 @@ type Product = {
   sku: string;
   name: string;
   category_id: number | null;
+  category_code: string | null;
   category_name: string | null;
   supplier_id: number | null;
   supplier_name: string | null;
@@ -16,7 +17,7 @@ type Product = {
   stock_quantity: number;
   reorder_level: number;
 };
-type Category = { id: number; name: string; description: string | null };
+type Category = { id: number; code: string | null; name: string; description: string | null };
 type Supplier = { id: number; name: string };
 type UnitRow = { unit_name: string; pieces: string; cost: string; selling: string; is_default: boolean };
 
@@ -35,11 +36,18 @@ export function InventoryPage() {
   const [stockOpen, setStockOpen] = useState(false);
   const [stockQty, setStockQty] = useState("0");
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [catCode, setCatCode] = useState("");
   const [catName, setCatName] = useState("");
   const [catDesc, setCatDesc] = useState("");
+  const [categoryError, setCategoryError] = useState("");
+  const [categorySavedKey, setCategorySavedKey] = useState(0);
+  const categorySavedTimer = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [savedMessage, setSavedMessage] = useState("");
   const [productFormKey, setProductFormKey] = useState(0);
+  const [newCategoryId, setNewCategoryId] = useState("");
+  const [generatedSku, setGeneratedSku] = useState("");
+  const [skuError, setSkuError] = useState("");
 
   async function load() {
     const params = new URLSearchParams();
@@ -67,6 +75,9 @@ export function InventoryPage() {
     if (product === "new") {
       setEditing("new");
       setUnits([emptyUnit()]);
+      setNewCategoryId("");
+      setGeneratedSku("");
+      setSkuError("");
       return;
     }
     setEditing(product);
@@ -80,30 +91,63 @@ export function InventoryPage() {
     })) : [emptyUnit()]);
   }
 
+  useEffect(() => {
+    if (editing !== "new") return;
+    if (!newCategoryId) {
+      setGeneratedSku("");
+      setSkuError("");
+      return;
+    }
+    let cancelled = false;
+    api<{ sku: string }>(`/api/categories/${newCategoryId}/next-sku`)
+      .then((result) => {
+        if (cancelled) return;
+        setGeneratedSku(result.sku);
+        setSkuError("");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setGeneratedSku("");
+        setSkuError(err instanceof ApiError ? err.message : "تعذر إنشاء كود المنتج");
+      });
+    return () => { cancelled = true; };
+  }, [editing, newCategoryId]);
+
   async function saveProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const isNew = editing === "new";
+    const categoryValue = isNew ? newCategoryId : String(form.get("category_id") || "");
     const payload = {
-      sku: String(form.get("sku") || ""),
+      sku: isNew ? generatedSku : String(form.get("sku") || ""),
       name: String(form.get("name") || ""),
-      category_id: form.get("category_id") ? Number(form.get("category_id")) : null,
+      category_id: categoryValue ? Number(categoryValue) : null,
       supplier_id: form.get("supplier_id") ? Number(form.get("supplier_id")) : null,
       cost_price: Number(form.get("cost_price") || 0),
       selling_price: Number(form.get("selling_price") || 0),
       stock_quantity: Number(form.get("stock_quantity") || 0),
       reorder_level: Number(form.get("reorder_level") || 0),
     };
+    if (isNew && !payload.category_id) {
+      setSkuError("يرجى اختيار التصنيف أولاً.");
+      return;
+    }
+    if (isNew && !generatedSku) {
+      setSkuError("اختر تصنيفاً له رمز حتى يظهر كود المنتج.");
+      return;
+    }
     try {
-      if (editing === "new") {
-        await api("/api/products", { method: "POST", body: JSON.stringify(payload) });
+      let savedId: number | null = null;
+      if (isNew) {
+        const created = await api<{ id: number; sku: string }>("/api/products", { method: "POST", body: JSON.stringify(payload) });
+        savedId = created.id;
       } else if (editing) {
         await api(`/api/products/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) });
+        savedId = editing.id;
       }
-      const refreshed = await api<Product[]>(`/api/products?q=${encodeURIComponent(payload.sku)}`);
-      const saved = refreshed.find((product) => product.sku === payload.sku);
-      if (saved) {
+      if (savedId) {
         for (const unit of units) {
-          await api(`/api/products/${saved.id}/units`, {
+          await api(`/api/products/${savedId}/units`, {
             method: "POST",
             body: JSON.stringify({
               unit_name: unit.unit_name,
@@ -115,8 +159,11 @@ export function InventoryPage() {
           });
         }
       }
-      if (editing === "new") {
+      if (isNew) {
         setUnits([{ unit_name: "Piece", pieces: "", cost: "", selling: "", is_default: true }]);
+        setNewCategoryId("");
+        setGeneratedSku("");
+        setSkuError("");
         setProductFormKey((key) => key + 1);
         setSavedMessage("تم حفظ المنتج بنجاح. يمكنك إضافة المنتج التالي.");
         setError("");
@@ -152,14 +199,41 @@ export function InventoryPage() {
     }
   }
 
+  function categoryLabel(category: { code?: string | null; name: string }) {
+    return category.code ? `${category.code} — ${category.name}` : category.name;
+  }
+
+  useEffect(() => {
+    return () => {
+      if (categorySavedTimer.current !== null) window.clearTimeout(categorySavedTimer.current);
+    };
+  }, []);
+
+  function clearCategorySaved() {
+    if (categorySavedTimer.current !== null) {
+      window.clearTimeout(categorySavedTimer.current);
+      categorySavedTimer.current = null;
+    }
+    setCategorySavedKey(0);
+  }
+
   async function addCategory() {
     try {
-      await api("/api/categories", { method: "POST", body: JSON.stringify({ name: catName, description: catDesc }) });
+      await api("/api/categories", { method: "POST", body: JSON.stringify({ code: catCode, name: catName, description: catDesc }) });
+      setCatCode("");
       setCatName("");
       setCatDesc("");
+      setCategoryError("");
       await load();
+      setCategorySavedKey((key) => key + 1);
+      if (categorySavedTimer.current !== null) window.clearTimeout(categorySavedTimer.current);
+      categorySavedTimer.current = window.setTimeout(() => {
+        categorySavedTimer.current = null;
+        setCategorySavedKey(0);
+      }, 3000);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "تعذر إضافة التصنيف");
+      clearCategorySaved();
+      setCategoryError(err instanceof ApiError ? err.message : "تعذر إضافة التصنيف");
     }
   }
 
@@ -180,7 +254,7 @@ export function InventoryPage() {
         <input className="grow" placeholder="بحث بالاسم أو SKU أو التصنيف" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") load(); }} />
         <select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
           <option value="">كل التصنيفات</option>
-          {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+          {categories.map((category) => <option key={category.id} value={category.id}>{categoryLabel(category)}</option>)}
         </select>
         <button className="btn btn-muted" onClick={load}>بحث</button>
       </div>
@@ -193,7 +267,7 @@ export function InventoryPage() {
             <tbody>
               {visible.map((product) => (
                 <tr key={product.id} className={`${product.stock_quantity <= product.reorder_level ? "low-stock" : ""} ${selected?.id === product.id ? "selected" : ""} clickable`} onClick={() => setSelected(product)}>
-                  <td>{product.id}</td><td>{product.sku}</td><td>{product.name}</td><td>{product.category_name || "—"}</td><td>{product.supplier_name || "—"}</td>
+                  <td>{product.id}</td><td>{product.sku}</td><td>{product.name}</td><td>{product.category_name ? categoryLabel({ code: product.category_code, name: product.category_name }) : "—"}</td><td>{product.supplier_name || "—"}</td>
                   <td>{money(product.cost_price)}</td><td>{money(product.selling_price)}</td><td>{product.stock_quantity}</td><td>{product.reorder_level}</td>
                 </tr>
               ))}
@@ -211,14 +285,35 @@ export function InventoryPage() {
         <Modal title={editing === "new" ? "إضافة منتج" : "تعديل منتج"} onClose={() => setEditing(null)}>
           {savedMessage && editing === "new" && <div className="note">{savedMessage}</div>}
           <form key={productFormKey} className="form-grid" onSubmit={saveProduct}>
-            <label>SKU<input name="sku" defaultValue={draft?.sku || ""} required /></label>
-            <label>اسم المنتج<input name="name" defaultValue={draft?.name || ""} required /></label>
-            <label>التصنيف
-              <select name="category_id" defaultValue={draft?.category_id || ""}>
-                <option value="">بدون</option>
-                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-              </select>
-            </label>
+            {editing === "new" ? (
+              <>
+                <label>التصنيف
+                  <select name="category_id" value={newCategoryId} onChange={(event) => setNewCategoryId(event.target.value)} required>
+                    <option value="">اختر التصنيف</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id} disabled={!category.code}>
+                        {category.code ? categoryLabel(category) : `${category.name} — بدون رمز`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>SKU<input name="sku" value={generatedSku} readOnly required placeholder="يظهر بعد اختيار التصنيف" /></label>
+                {skuError && <div className="error">{skuError}</div>}
+                {!categories.some((category) => category.code) && <div className="note">أضف رمز التصنيف أولاً من إدارة التصنيفات، ثم اختره هنا.</div>}
+                <label>اسم المنتج<input name="name" required /></label>
+              </>
+            ) : (
+              <>
+                <label>SKU<input name="sku" defaultValue={draft?.sku || ""} required /></label>
+                <label>اسم المنتج<input name="name" defaultValue={draft?.name || ""} required /></label>
+                <label>التصنيف
+                  <select name="category_id" defaultValue={draft?.category_id || ""}>
+                    <option value="">بدون</option>
+                    {categories.map((category) => <option key={category.id} value={category.id}>{categoryLabel(category)}</option>)}
+                  </select>
+                </label>
+              </>
+            )}
             <label>المورّد
               <select name="supplier_id" defaultValue={draft?.supplier_id || ""}>
                 <option value="">بدون</option>
@@ -256,12 +351,42 @@ export function InventoryPage() {
       )}
 
       {categoriesOpen && (
-        <Modal title="تصنيفات المنتجات" onClose={() => setCategoriesOpen(false)}>
-          <table><thead><tr><th>الاسم</th><th>الوصف</th></tr></thead><tbody>{categories.map((category) => <tr key={category.id}><td>{category.name}</td><td>{category.description || "—"}</td></tr>)}</tbody></table>
-          <div className="form-grid" style={{ marginTop: 12 }}>
-            <input placeholder="اسم التصنيف" value={catName} onChange={(event) => setCatName(event.target.value)} />
-            <input placeholder="الوصف" value={catDesc} onChange={(event) => setCatDesc(event.target.value)} />
-            <button className="btn btn-primary" onClick={addCategory}>إضافة التصنيف</button>
+        <Modal className="categories-modal" title="تصنيفات المنتجات" onClose={() => { setCategoriesOpen(false); setCategoryError(""); clearCategorySaved(); }}>
+          {categoryError && <div className="error">{categoryError}</div>}
+          <h3 className="category-section-title">إضافة تصنيف جديد</h3>
+          <div className="category-create">
+            <label className="field-code">رمز التصنيف
+              <input placeholder="مثال: SN" value={catCode} maxLength={10} onChange={(event) => setCatCode(event.target.value.toUpperCase())} />
+            </label>
+            <label className="field-name">اسم التصنيف
+              <input value={catName} onChange={(event) => setCatName(event.target.value)} />
+            </label>
+            <label className="field-desc">وصف التصنيف
+              <input value={catDesc} onChange={(event) => setCatDesc(event.target.value)} />
+            </label>
+            <button type="button" className="btn btn-primary add-category-btn" onClick={addCategory}>إضافة التصنيف</button>
+            {categorySavedKey > 0 && (
+              <p key={categorySavedKey} className="category-saved" role="status">
+                <svg className="category-check" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 13.2 9.2 17.4 19 7.6" />
+                </svg>
+                تم إضافة التصنيف بنجاح
+              </p>
+            )}
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>الرمز</th><th>الاسم</th><th>الوصف</th></tr></thead>
+              <tbody>
+                {categories.map((category) => (
+                  <tr key={category.id}>
+                    <td>{category.code || "—"}</td>
+                    <td>{category.name || "—"}</td>
+                    <td>{category.description || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Modal>
       )}

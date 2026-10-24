@@ -482,19 +482,24 @@ class InventoryView(tk.Frame):
         f_list = tk.Frame(modal, bg="white")
         f_list.pack(fill="both", expand=True, pady=(0, 15))
 
-        cols = ("desc", "name", "id")
+        cols = ("desc", "name", "code")
         tree = ttk.Treeview(f_list, columns=cols, show="headings", height=8)
-        tree.heading("id", text="الرقم")
+        tree.heading("code", text="الرمز")
         tree.heading("name", text="اسم التصنيف")
         tree.heading("desc", text="الوصف")
 
-        tree.column("id", width=50, anchor="center")
+        tree.column("code", width=80, anchor="center")
         tree.column("name", width=160, anchor="e")
         tree.column("desc", width=220, anchor="e")
         tree.pack(fill="both", expand=True)
 
-        for c in self.categories_list:
-            tree.insert("", "end", values=(c['description'], c['name'], c['id']))
+        def fill_categories():
+            for item in tree.get_children():
+                tree.delete(item)
+            for c in self.categories_list:
+                tree.insert("", "end", values=(c['description'], c['name'], c['code'] or ""))
+
+        fill_categories()
 
         tk.Label(modal, text="إضافة تصنيف جديد", font=("Helvetica", 13, "bold"), bg="white", fg="#0f172a").pack(anchor="e", pady=(5, 5))
 
@@ -502,29 +507,28 @@ class InventoryView(tk.Frame):
         f_form.pack(fill="x")
         f_form.columnconfigure(0, weight=1)
 
-        tk.Label(f_form, text="اسم التصنيف:", font=("Helvetica", 11, "bold"), bg="white").grid(row=0, column=1, sticky="e", pady=5, padx=5)
-        ent_name = tk.Entry(f_form, font=("Helvetica", 11), width=28, justify="right")
-        ent_name.grid(row=0, column=0, pady=5, padx=5)
+        tk.Label(f_form, text="رمز التصنيف:", font=("Helvetica", 11, "bold"), bg="white").grid(row=0, column=1, sticky="e", pady=5, padx=5)
+        ent_code = tk.Entry(f_form, font=("Helvetica", 11), width=12, justify="right")
+        ent_code.grid(row=0, column=0, pady=5, padx=5, sticky="e")
 
-        tk.Label(f_form, text="الوصف:", font=("Helvetica", 11, "bold"), bg="white").grid(row=1, column=1, sticky="e", pady=5, padx=5)
+        tk.Label(f_form, text="اسم التصنيف:", font=("Helvetica", 11, "bold"), bg="white").grid(row=1, column=1, sticky="e", pady=5, padx=5)
+        ent_name = tk.Entry(f_form, font=("Helvetica", 11), width=28, justify="right")
+        ent_name.grid(row=1, column=0, pady=5, padx=5)
+
+        tk.Label(f_form, text="الوصف:", font=("Helvetica", 11, "bold"), bg="white").grid(row=2, column=1, sticky="e", pady=5, padx=5)
         ent_desc = tk.Entry(f_form, font=("Helvetica", 11), width=38, justify="right")
-        ent_desc.grid(row=1, column=0, pady=5, padx=5)
+        ent_desc.grid(row=2, column=0, pady=5, padx=5)
 
         def save_cat():
+            code = ent_code.get().strip()
             name = ent_name.get().strip()
             desc = ent_desc.get().strip()
-            if not name:
-                messagebox.showwarning("اسم مفقود", "يرجى إدخال اسم التصنيف.")
-                return
-
-            s, m = add_category(name, desc)
+            s, m = add_category(code, name, desc)
             if s:
                 messagebox.showinfo("نجاح", "تمت إضافة التصنيف بنجاح!")
                 self.refresh_data()
-                for item in tree.get_children():
-                    tree.delete(item)
-                for c in self.categories_list:
-                    tree.insert("", "end", values=(c['description'], c['name'], c['id']))
+                fill_categories()
+                ent_code.delete(0, "end")
                 ent_name.delete(0, "end")
                 ent_desc.delete(0, "end")
             else:

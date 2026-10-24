@@ -159,6 +159,57 @@ class WebApiTestCase(unittest.TestCase):
         self.assertEqual(exported.status_code, 200)
         self.assertIn("بيع", exported.content.decode("utf-8-sig"))
 
+    def test_new_product_sku_follows_category_sequence(self):
+        self.login("manager", "manager123")
+        categories = self.client.get("/api/categories")
+        self.assertEqual(categories.status_code, 200)
+        clothes = next(item for item in categories.json() if item["code"] == "CL")
+
+        preview = self.client.get(f"/api/categories/{clothes['id']}/next-sku")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["sku"], "CL0003")
+
+        created = self.client.post(
+            "/api/products",
+            json={
+                "name": "منتج تجريبي",
+                "category_id": clothes["id"],
+                "cost_price": 1,
+                "selling_price": 2,
+                "stock_quantity": 3,
+                "reorder_level": 1,
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["sku"], "CL0003")
+        self.assertEqual(created.json()["id"] > 0, True)
+
+        nxt = self.client.get(f"/api/categories/{clothes['id']}/next-sku")
+        self.assertEqual(nxt.json()["sku"], "CL0004")
+
+        missing = self.client.post(
+            "/api/products",
+            json={"name": "بدون تصنيف", "cost_price": 1, "selling_price": 2, "stock_quantity": 1, "reorder_level": 1},
+        )
+        self.assertEqual(missing.status_code, 400)
+
+    def test_category_code_can_be_saved_on_existing_category(self):
+        self.login("manager", "manager123")
+        created = self.client.post(
+            "/api/categories",
+            json={"code": "SN", "name": "تصنيف الرمز", "description": "وصف"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        categories = self.client.get("/api/categories").json()
+        category = next(item for item in categories if item["name"] == "تصنيف الرمز")
+        self.assertEqual(category["code"], "SN")
+
+        renamed = self.client.put(f"/api/categories/{category['id']}", json={"code": "ml"})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        categories = self.client.get("/api/categories").json()
+        category = next(item for item in categories if item["id"] == category["id"])
+        self.assertEqual(category["code"], "ML")
+
 
 if __name__ == "__main__":
     unittest.main()

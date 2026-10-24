@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sqlite3
 from datetime import datetime, timedelta
@@ -318,6 +319,7 @@ def _create_schema(cursor):
         """
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT,
             name TEXT UNIQUE NOT NULL,
             description TEXT
         )
@@ -585,6 +587,7 @@ def _create_indexes(cursor):
         "CREATE INDEX IF NOT EXISTS idx_expenses_session_id ON expenses(session_id)",
         "CREATE INDEX IF NOT EXISTS idx_expenses_expense_date ON expenses(expense_date)",
         "CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_code ON categories(code) WHERE code IS NOT NULL AND code != ''",
     ]
     for statement in statements:
         cursor.execute(statement)
@@ -641,6 +644,8 @@ def _database_requires_migration(cursor):
     if not _column_exists(cursor, "sale_returns", "user_id"):
         return True
     if not _column_exists(cursor, "expenses", "user_id"):
+        return True
+    if not _column_exists(cursor, "categories", "code"):
         return True
     return False
 
@@ -830,6 +835,10 @@ def _run_migrations(cursor, db_path=DEFAULT_DB_PATH):
         cursor.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         _record_migration(cursor, 17, "Added expenses.user_id")
 
+    if _table_exists(cursor, "categories") and not _column_exists(cursor, "categories", "code"):
+        cursor.execute("ALTER TABLE categories ADD COLUMN code TEXT")
+        _record_migration(cursor, 18, "Added categories.code")
+
     if not is_production_database(db_path):
         apply_phase1(cursor)
 
@@ -911,12 +920,12 @@ def _insert_sample_data(cursor):
     except UnicodeEncodeError:
         print("Seeding initial sample data...")
     categories = [
-        ("ملابس وأزياء", "ملابس وإكسسوارات عصرية"),
-        ("إلكترونيات", "أجهزة ذكية، هواتف، وكابلات تقنية"),
-        ("أدوات منزلية ومطبخ", "أواني طهي، ديكورات ومستلزمات المنزل"),
-        ("مشروبات", "مشروبات غازية، قهوة متخصصة، وشاي فاخر"),
+        ("CL", "ملابس وأزياء", "ملابس وإكسسوارات عصرية"),
+        ("EL", "إلكترونيات", "أجهزة ذكية، هواتف، وكابلات تقنية"),
+        ("HM", "أدوات منزلية ومطبخ", "أواني طهي، ديكورات ومستلزمات المنزل"),
+        ("BV", "مشروبات", "مشروبات غازية، قهوة متخصصة، وشاي فاخر"),
     ]
-    cursor.executemany("INSERT INTO categories (name, description) VALUES (?, ?)", categories)
+    cursor.executemany("INSERT INTO categories (code, name, description) VALUES (?, ?, ?)", categories)
 
     suppliers = [
         ("شركة التوريدات التقنية", "أحمد عبدالله", "0501234567", "support@techsupply.com", "الرياض, المنطقة الصناعية"),
@@ -993,7 +1002,7 @@ def get_all_products(db_path=DEFAULT_DB_PATH):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT p.*, c.name AS category_name, s.name AS supplier_name
+        SELECT p.*, c.code AS category_code, c.name AS category_name, s.name AS supplier_name
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN suppliers s ON p.supplier_id = s.id
@@ -1010,7 +1019,7 @@ def get_low_stock_products(db_path=DEFAULT_DB_PATH):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT p.*, c.name AS category_name, s.name AS supplier_name
+        SELECT p.*, c.code AS category_code, c.name AS category_name, s.name AS supplier_name
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN suppliers s ON p.supplier_id = s.id
@@ -1029,18 +1038,83 @@ def search_products(query, db_path=DEFAULT_DB_PATH):
     q = f"%{query}%"
     cursor.execute(
         """
-        SELECT p.*, c.name AS category_name, s.name AS supplier_name
+        SELECT p.*, c.code AS category_code, c.name AS category_name, s.name AS supplier_name
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.id
         LEFT JOIN suppliers s ON p.supplier_id = s.id
-        WHERE p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ?
+        WHERE p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ? OR IFNULL(c.code, '') LIKE ?
         ORDER BY p.name
         """,
-        (q, q, q),
+        (q, q, q, q),
     )
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def _next_category_sku(cursor, category_id):
+    cursor.execute("SELECT code FROM categories WHERE id=?", (category_id,))
+    row = cursor.fetchone()
+    if row is None:
+        return None, "التصنيف غير موجود."
+    code = (row["code"] or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,10}", code):
+        return None, "هذا التصنيف ليس له رمز. أضف رمز التصنيف أولاً."
+    cursor.execute("SELECT COUNT(*) FROM products WHERE category_id=?", (category_id,))
+    number = cursor.fetchone()[0] + 1
+    while True:
+        sku = f"{code}{number:04d}"
+        cursor.execute("SELECT 1 FROM products WHERE sku=?", (sku,))
+        if cursor.fetchone() is None:
+            return sku, None
+        number += 1
+
+
+def preview_product_sku(category_id, db_path=DEFAULT_DB_PATH):
+    conn = get_connection(db_path)
+    try:
+        sku, error = _next_category_sku(conn.cursor(), category_id)
+        if error:
+            return False, error
+        return True, {"sku": sku}
+    finally:
+        conn.close()
+
+
+def add_product_with_category_sku(name, category_id, cost_price, selling_price, stock_quantity, reorder_level, supplier_id, db_path=DEFAULT_DB_PATH):
+    name = (name or "").strip()
+    if not name:
+        return False, "يرجى إدخال اسم المنتج."
+    if not category_id:
+        return False, "يرجى اختيار التصنيف أولاً."
+
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        sku, error = _next_category_sku(cursor, category_id)
+        if error:
+            conn.rollback()
+            return False, error
+        cursor.execute(
+            """
+            INSERT INTO products (sku, name, category_id, cost_price, selling_price, stock_quantity, reorder_level, supplier_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (sku, name, category_id, round_amount(cost_price), round_amount(selling_price), stock_quantity, reorder_level, supplier_id),
+        )
+        product_id = cursor.lastrowid
+        _seed_default_product_units(cursor)
+        conn.commit()
+        return True, {"message": "تمت إضافة المنتج بنجاح!", "sku": sku, "id": product_id}
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False, "خطأ: كود المنتج (SKU) مسجل مسبقاً."
+    except Exception:
+        conn.rollback()
+        return False, "حدث خطأ، لم يتم حفظ أي تغييرات"
+    finally:
+        conn.close()
 
 
 def add_product(sku, name, category_id, cost_price, selling_price, stock_quantity, reorder_level, supplier_id, db_path=DEFAULT_DB_PATH):
@@ -1128,21 +1202,63 @@ def adjust_stock(product_id, new_quantity, db_path=DEFAULT_DB_PATH):
 def get_all_categories(db_path=DEFAULT_DB_PATH):
     conn = get_connection(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM categories ORDER BY name")
+    cursor.execute("SELECT * FROM categories ORDER BY code IS NULL, code, name")
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
-def add_category(name, description, db_path=DEFAULT_DB_PATH):
+def add_category(code, name, description, db_path=DEFAULT_DB_PATH):
+    code = (code or "").strip().upper()
+    name = (name or "").strip()
+    description = (description or "").strip()
+    if not re.fullmatch(r"[A-Z]{1,10}", code):
+        return False, "رمز التصنيف يجب أن يكون حروفاً إنجليزية فقط، مثل SN أو ML أو SKR."
+    if not name:
+        return False, "يرجى إدخال اسم التصنيف."
+    if not description:
+        return False, "يرجى إدخال وصف التصنيف."
+
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO categories (name, description) VALUES (?, ?)", (name, description))
+        cursor.execute("SELECT id FROM categories WHERE code = ?", (code,))
+        if cursor.fetchone():
+            return False, "رمز التصنيف مسجل مسبقاً."
+        cursor.execute("SELECT id FROM categories WHERE name = ?", (name,))
+        if cursor.fetchone():
+            return False, "اسم التصنيف موجود مسبقاً."
+        cursor.execute(
+            "INSERT INTO categories (code, name, description) VALUES (?, ?, ?)",
+            (code, name, description),
+        )
         conn.commit()
         return True, "تمت إضافة التصنيف بنجاح."
     except sqlite3.IntegrityError:
         return False, "هذا التصنيف موجود مسبقاً."
+    finally:
+        conn.close()
+
+
+def update_category_code(category_id, code, db_path=DEFAULT_DB_PATH):
+    code = (code or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,10}", code):
+        return False, "رمز التصنيف يجب أن يكون حروفاً إنجليزية فقط، مثل SN أو ML أو SKR."
+
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM categories WHERE id=?", (category_id,))
+        if cursor.fetchone() is None:
+            return False, "التصنيف غير موجود."
+        cursor.execute("SELECT id FROM categories WHERE code=? AND id!=?", (code, category_id))
+        if cursor.fetchone():
+            return False, "رمز التصنيف مسجل مسبقاً."
+        cursor.execute("UPDATE categories SET code=? WHERE id=?", (code, category_id))
+        conn.commit()
+        return True, "تم حفظ رمز التصنيف."
+    except sqlite3.IntegrityError:
+        return False, "رمز التصنيف مسجل مسبقاً."
     finally:
         conn.close()
 
